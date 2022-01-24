@@ -25,6 +25,7 @@ type
     fMatcherString: string;
     fMathsParser: TCStyleParser;
     fIdentifiers: TDictionary<string, integer>;
+    fNextID: integer;
     procedure cleanMatcher;
     procedure replaceIdentifiers(var aParseString: string);
   private
@@ -42,7 +43,8 @@ type
 implementation
 
 uses
-  System.StrUtils, System.SysUtils, Casbin.Exception.Types, System.Rtti, Casbin.Core.Defaults;
+  System.StrUtils, System.SysUtils, Casbin.Exception.Types, System.Rtti, Casbin.Core.Defaults,
+  System.RegularExpressions;
 
 procedure TMatcher.clearIdentifiers;
 begin
@@ -57,6 +59,9 @@ begin
   fMathsParser:=TCStyleParser.Create;
   TCStyleParser(fMathsParser).CStyle:=False;
   fIdentifiers:=TDictionary<string, integer>.Create;
+
+  fNextID:=0;
+
   addIdentifier('true');
   addIdentifier('false');
 
@@ -71,30 +76,31 @@ begin
   inherited;
 end;
 
-{ TMatcher }
-
 procedure TMatcher.addIdentifier(const aTag: string);
 var
   tag: string;
 begin
-  tag:=UpperCase(Trim(aTag));
+  tag:=aTag.Trim.ToUpper;
   if not fIdentifiers.ContainsKey(tag) then
-    fIdentifiers.Add(tag, Integer(Round(Random*100)));
+  begin
+    AtomicIncrement(fNextID);
+    fIdentifiers.Add(tag, fNextID);
+  end;
 end;
 
 procedure TMatcher.cleanMatcher;
 var
   index: Integer;
 begin
-  fMatcherString:=ReplaceStr(fMatcherString, '==', '=');
-  fMatcherString:=ReplaceStr(fMatcherString, '&&', 'and');
-  fMatcherString:=ReplaceStr(fMatcherString, '||', 'or');
-  fMatcherString:=ReplaceStr(fMatcherString, '!', 'not');
-  index:=Pos('''', fMatcherString, Low(string));
-  while Index<>0 do
+  fMatcherString:=fMatcherString.Replace('==', '=');
+  fMatcherString:=fMatcherString.Replace('&&', 'and');
+  fMatcherString:=fMatcherString.Replace('||', 'or');
+  fMatcherString:=fMatcherString.Replace('!', 'not');
+  index:=fMatcherString.IndexOf('''');
+  while Index<>-1 do
   begin
-    Delete(fMatcherString, index, 1);
-    index:=Pos('''', fMatcherString, Low(string));
+    fMatcherString:=fMatcherString.Remove(index, 1);
+    index:=fMatcherString.IndexOf('''');
   end;
 end;
 
@@ -103,7 +109,7 @@ var
   eval: string;
 begin
   fMatcherString:=UpperCase(aMatcherString);
-  if Trim(fMatcherString)='' then
+  if fMatcherString.Trim.IsEmpty then
   begin
     Result:=erIndeterminate;
     Exit;
@@ -113,8 +119,8 @@ begin
 
   {TODO -oOwner -cGeneral : ReplaceStr(functions in expressions)}
   fMathsParser.Optimize := true;
-  eval:=fMathsParser.AsString[fMathsParser.AddExpression(trim(fMatcherString))];
-  if upperCase(eval)='TRUE' then
+  eval:=fMathsParser.AsString[fMathsParser.AddExpression(fMatcherString.Trim)];
+  if eval.ToUpper='TRUE' then
     Result:=erAllow
   else
     result:=erDeny;
@@ -123,9 +129,20 @@ end;
 procedure TMatcher.replaceIdentifiers(var aParseString: string);
 var
   pair: TPair<string, integer>;
+  pattern: string;
 begin
+  // JOHN == JOHNNY
+  // Replace JOHN -> 22. Dont replace JOHNNY to 22NY
+  // * Key has to be at the start of the string or the previous char is not part of the identifier (not a word)
+  // * Key has to be at the end of the string or the following char is not part of the identifier (not a word)
+  //
+  // Written by ErikUniformAgri
   for pair in fIdentifiers do
-    aParseString:=aParseString.Replace(pair.Key, pair.Value.ToString, [rfReplaceAll]);
+  begin
+    pattern:='(^|\W)'+pair.Key+'($|\W)';
+    while TRegex.Match(aParseString, pattern).Success do
+      aParseString:=TRegex.Replace(aParseString, pattern, '$1'+pair.Value.ToString+'$2');
+  end;
 end;
 
 end.
